@@ -3,7 +3,8 @@ import {
   Box, CssBaseline, AppBar, Toolbar, Typography, TextField, 
   IconButton, Paper, Avatar, List, ListItem, ListItemAvatar, 
   ListItemText, CircularProgress, styled, Drawer, Divider,
-  Button, ListItemButton, ListItemIcon, Snackbar, Alert
+  Button, ListItemButton, ListItemIcon, Snackbar, Alert,
+  Dialog, DialogTitle, DialogContent, DialogActions, Menu, MenuItem
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
@@ -11,8 +12,12 @@ import PersonOutlineIcon from '@mui/icons-material/PersonOutline';
 import HistoryIcon from '@mui/icons-material/History';
 import MenuIcon from '@mui/icons-material/Menu';
 import DeleteIcon from '@mui/icons-material/Delete';
+import AccountCircle from '@mui/icons-material/AccountCircle';
 import { motion, AnimatePresence } from 'framer-motion';
 import Markdown from 'react-markdown';
+import { GoogleLogin, googleLogout, useGoogleLogin } from '@react-oauth/google';
+import axios from 'axios';
+import jwt_decode from 'jwt-decode';
 
 // Custom styled components
 const GradientAppBar = styled(AppBar)(({ theme }) => ({
@@ -63,7 +68,28 @@ export default function App() {
     message: '',
     severity: 'info'
   });
+  const [authDialogOpen, setAuthDialogOpen] = useState(false);
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [user, setUser] = useState(null);
+  const [anchorEl, setAnchorEl] = useState(null);
   const messagesEndRef = useRef(null);
+
+  // Check for existing token on initial load
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        const decoded = jwt_decode(token);
+        setUser(decoded);
+        fetchConversations();
+      } catch (error) {
+        localStorage.removeItem('token');
+      }
+    }
+  }, []);
 
   // Show snackbar notification
   const showSnackbar = (message, severity = 'info') => {
@@ -75,13 +101,106 @@ export default function App() {
     setSnackbar(prev => ({ ...prev, open: false }));
   };
 
+  // Handle user menu
+  const handleMenuOpen = (event) => {
+    setAnchorEl(event.currentTarget);
+  };
+
+  const handleMenuClose = () => {
+    setAnchorEl(null);
+  };
+
+  // Handle login with email/password
+  const handleEmailLogin = async () => {
+    try {
+      const response = await axios.post('https://react-zlhw.onrender.com/auth/login', {
+        email,
+        password
+      });
+      
+      localStorage.setItem('token', response.data.token);
+      const decoded = jwt_decode(response.data.token);
+      setUser(decoded);
+      setAuthDialogOpen(false);
+      fetchConversations();
+      showSnackbar('Logged in successfully', 'success');
+    } catch (error) {
+      showSnackbar(error.response?.data?.message || 'Login failed', 'error');
+    }
+  };
+
+  // Handle signup with email/password
+  const handleEmailSignup = async () => {
+    try {
+      const response = await axios.post('https://react-zlhw.onrender.com/auth/signup', {
+        name,
+        email,
+        password
+      });
+      
+      localStorage.setItem('token', response.data.token);
+      const decoded = jwt_decode(response.data.token);
+      setUser(decoded);
+      setAuthDialogOpen(false);
+      fetchConversations();
+      showSnackbar('Account created successfully', 'success');
+    } catch (error) {
+      showSnackbar(error.response?.data?.message || 'Signup failed', 'error');
+    }
+  };
+
+  // Handle Google login
+  const handleGoogleLogin = useGoogleLogin({
+    onSuccess: async (response) => {
+      try {
+        const userInfo = await axios.get(
+          'https://www.googleapis.com/oauth2/v3/userinfo',
+          { headers: { Authorization: `Bearer ${response.access_token}` } }
+        );
+        
+        const googleResponse = await axios.post('https://react-zlhw.onrender.com/auth/google', {
+          token: response.access_token,
+          email: userInfo.data.email,
+          name: userInfo.data.name
+        });
+        
+        localStorage.setItem('token', googleResponse.data.token);
+        const decoded = jwt_decode(googleResponse.data.token);
+        setUser(decoded);
+        fetchConversations();
+        showSnackbar('Logged in with Google', 'success');
+      } catch (error) {
+        showSnackbar('Google login failed', 'error');
+      }
+    },
+    onError: () => {
+      showSnackbar('Google login failed', 'error');
+    },
+    clientId: '461438608851-lvb7ba066s1qqf9lva7t4qmi714m69se.apps.googleusercontent.com'
+  });
+
+  // Handle logout
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    setUser(null);
+    setMessages([]);
+    setConversations([]);
+    setCurrentConversationId(null);
+    handleMenuClose();
+    showSnackbar('Logged out successfully', 'success');
+  };
+
   // Fetch all conversations
   const fetchConversations = async () => {
+    if (!user) return;
+    
     try {
-      const response = await fetch('https://react-zlhw.onrender.com/conversations');
-      if (!response.ok) throw new Error('Failed to fetch conversations');
-      const data = await response.json();
-      setConversations(data);
+      const response = await axios.get('https://react-zlhw.onrender.com/conversations', {
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      setConversations(response.data);
     } catch (error) {
       console.error('Error fetching conversations:', error);
       showSnackbar('Failed to load conversation history', 'error');
@@ -90,13 +209,20 @@ export default function App() {
 
   // Load a specific conversation
   const loadConversation = async (conversationId) => {
+    if (!user) {
+      setAuthDialogOpen(true);
+      return;
+    }
+    
     try {
       setIsLoading(true);
-      const response = await fetch(`https://react-zlhw.onrender.com/${conversationId}/messages`);
-      if (!response.ok) throw new Error('Failed to load conversation');
+      const response = await axios.get(`https://react-zlhw.onrender.com/${conversationId}/messages`, {
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`
+        }
+      });
       
-      const data = await response.json();
-      const formattedMessages = data.map(msg => ({
+      const formattedMessages = response.data.map(msg => ({
         ...msg,
         timestamp: new Date(msg.timestamp)
       }));
@@ -114,20 +240,20 @@ export default function App() {
 
   // Delete a conversation
   const deleteConversation = async (conversationId, event) => {
-    event.stopPropagation(); // Prevent triggering the load conversation
+    event.stopPropagation();
+    if (!user) return;
+    
     try {
-      const response = await fetch(`https://react-zlhw.onrender.com/${conversationId}`, {
-        method: 'DELETE'
+      await axios.delete(`https://react-zlhw.onrender.com/${conversationId}`, {
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`
+        }
       });
       
-      if (!response.ok) throw new Error('Failed to delete conversation');
-      
-      // If we're deleting the current conversation, clear it
       if (currentConversationId === conversationId) {
         startNewConversation();
       }
       
-      // Refresh conversation list
       await fetchConversations();
       showSnackbar('Conversation deleted', 'success');
     } catch (error) {
@@ -138,6 +264,11 @@ export default function App() {
 
   // Start a new conversation
   const startNewConversation = () => {
+    if (!user) {
+      setAuthDialogOpen(true);
+      return;
+    }
+    
     setMessages([{
       id: 'welcome',
       content: "Hello! I'm your Gemini AI assistant. How can I help you today?",
@@ -150,6 +281,11 @@ export default function App() {
 
   const handleSendMessage = async () => {
     if (!input.trim()) return;
+    
+    if (!user) {
+      setAuthDialogOpen(true);
+      return;
+    }
 
     const userMessage = {
       id: Date.now().toString(),
@@ -163,36 +299,28 @@ export default function App() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('https://react-zlhw.onrender.com/chat', {
-        method: 'POST',
+      const response = await axios.post('https://react-zlhw.onrender.com/chat', {
+        message: input,
+        conversation_id: currentConversationId || undefined
+      }, {
         headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: input,
-          conversation_id: currentConversationId || undefined
-        })
+          Authorization: `Bearer ${localStorage.getItem('token')}`
+        }
       });
-
-      if (!response.ok) throw new Error('Failed to send message');
-      
-      const data = await response.json();
       
       const assistantMessage = {
         id: Date.now().toString(),
-        content: data.response,
+        content: response.data.response,
         sender: 'assistant',
         timestamp: new Date()
       };
 
       setMessages(prev => [...prev, assistantMessage]);
       
-      // If this was a new conversation, update the ID and refresh list
       if (!currentConversationId) {
-        setCurrentConversationId(data.conversation_id);
+        setCurrentConversationId(response.data.conversation_id);
         await fetchConversations();
       } else {
-        // Just refresh the conversation list to update timestamps
         await fetchConversations();
       }
     } catch (error) {
@@ -215,16 +343,6 @@ export default function App() {
       handleSendMessage();
     }
   };
-
-  // Initialize with conversations
-  useEffect(() => {
-    fetchConversations();
-    
-    // Sample welcome message for new chats
-    if (!currentConversationId && messages.length === 0) {
-      startNewConversation();
-    }
-  }, []);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -255,6 +373,34 @@ export default function App() {
             <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
               {getCurrentTitle()}
             </Typography>
+            
+            {user ? (
+              <>
+                <IconButton
+                  size="large"
+                  edge="end"
+                  color="inherit"
+                  onClick={handleMenuOpen}
+                >
+                  <AccountCircle />
+                </IconButton>
+                <Menu
+                  anchorEl={anchorEl}
+                  open={Boolean(anchorEl)}
+                  onClose={handleMenuClose}
+                >
+                  <MenuItem disabled>{user.name || user.email}</MenuItem>
+                  <MenuItem onClick={handleLogout}>Logout</MenuItem>
+                </Menu>
+              </>
+            ) : (
+              <Button 
+                color="inherit"
+                onClick={() => setAuthDialogOpen(true)}
+              >
+                Login
+              </Button>
+            )}
           </Toolbar>
         </GradientAppBar>
 
@@ -325,116 +471,215 @@ export default function App() {
           </List>
         </Drawer>
 
-        <MessageList>
-          <AnimatePresence>
-            {messages.map((message) => (
-              <motion.div
-                key={message.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3 }}
-              >
-                <ListItem sx={{
-                  justifyContent: message.sender === 'user' ? 'flex-end' : 'flex-start',
-                  alignItems: 'flex-start',
-                  px: 2,
-                  py: 1
-                }}>
-                  {message.sender === 'assistant' && (
-                    <ListItemAvatar sx={{ minWidth: 40 }}>
-                      <Avatar sx={{ bgcolor: 'primary.main' }}>
-                        <SmartToyOutlinedIcon />
-                      </Avatar>
-                    </ListItemAvatar>
-                  )}
-                  <Paper
-                    elevation={2}
-                    sx={{
-                      p: 2,
-                      ml: message.sender === 'assistant' ? 0 : 2,
-                      mr: message.sender === 'user' ? 0 : 2,
-                      maxWidth: '80%',
-                      backgroundColor: message.sender === 'user' ? 'primary.main' : 'background.paper',
-                      color: message.sender === 'user' ? 'primary.contrastText' : 'text.primary',
-                      borderRadius: message.sender === 'user' ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
-                    }}
+        {user ? (
+          <>
+            <MessageList>
+              <AnimatePresence>
+                {messages.map((message) => (
+                  <motion.div
+                    key={message.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.3 }}
                   >
-                    <Markdown>{message.content}</Markdown>
-                    <Typography variant="caption" display="block" sx={{
-                      textAlign: 'right',
-                      mt: 1,
-                      opacity: 0.7,
-                      color: message.sender === 'user' ? 'primary.contrastText' : 'text.secondary'
+                    <ListItem sx={{
+                      justifyContent: message.sender === 'user' ? 'flex-end' : 'flex-start',
+                      alignItems: 'flex-start',
+                      px: 2,
+                      py: 1
                     }}>
-                      {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </Typography>
+                      {message.sender === 'assistant' && (
+                        <ListItemAvatar sx={{ minWidth: 40 }}>
+                          <Avatar sx={{ bgcolor: 'primary.main' }}>
+                            <SmartToyOutlinedIcon />
+                          </Avatar>
+                        </ListItemAvatar>
+                      )}
+                      <Paper
+                        elevation={2}
+                        sx={{
+                          p: 2,
+                          ml: message.sender === 'assistant' ? 0 : 2,
+                          mr: message.sender === 'user' ? 0 : 2,
+                          maxWidth: '80%',
+                          backgroundColor: message.sender === 'user' ? 'primary.main' : 'background.paper',
+                          color: message.sender === 'user' ? 'primary.contrastText' : 'text.primary',
+                          borderRadius: message.sender === 'user' ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
+                        }}
+                      >
+                        <Markdown>{message.content}</Markdown>
+                        <Typography variant="caption" display="block" sx={{
+                          textAlign: 'right',
+                          mt: 1,
+                          opacity: 0.7,
+                          color: message.sender === 'user' ? 'primary.contrastText' : 'text.secondary'
+                        }}>
+                          {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </Typography>
+                      </Paper>
+                      {message.sender === 'user' && (
+                        <ListItemAvatar sx={{ minWidth: 40 }}>
+                          <Avatar sx={{ bgcolor: 'secondary.main' }}>
+                            <PersonOutlineIcon />
+                          </Avatar>
+                        </ListItemAvatar>
+                      )}
+                    </ListItem>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+              <div ref={messagesEndRef} />
+              {isLoading && (
+                <ListItem sx={{ justifyContent: 'flex-start' }}>
+                  <ListItemAvatar>
+                    <Avatar sx={{ bgcolor: 'primary.main' }}>
+                      <SmartToyOutlinedIcon />
+                    </Avatar>
+                  </ListItemAvatar>
+                  <Paper elevation={2} sx={{ p: 2, borderRadius: '18px 18px 18px 4px' }}>
+                    <CircularProgress size={20} />
                   </Paper>
-                  {message.sender === 'user' && (
-                    <ListItemAvatar sx={{ minWidth: 40 }}>
-                      <Avatar sx={{ bgcolor: 'secondary.main' }}>
-                        <PersonOutlineIcon />
-                      </Avatar>
-                    </ListItemAvatar>
-                  )}
                 </ListItem>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-          <div ref={messagesEndRef} />
-          {isLoading && (
-            <ListItem sx={{ justifyContent: 'flex-start' }}>
-              <ListItemAvatar>
-                <Avatar sx={{ bgcolor: 'primary.main' }}>
-                  <SmartToyOutlinedIcon />
-                </Avatar>
-              </ListItemAvatar>
-              <Paper elevation={2} sx={{ p: 2, borderRadius: '18px 18px 18px 4px' }}>
-                <CircularProgress size={20} />
-              </Paper>
-            </ListItem>
-          )}
-        </MessageList>
+              )}
+            </MessageList>
 
-        <InputContainer>
+            <InputContainer>
+              <TextField
+                fullWidth
+                variant="outlined"
+                placeholder="Type your message..."
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                multiline
+                maxRows={4}
+                sx={{
+                  '& .MuiOutlinedInput-root': {
+                    borderRadius: '20px',
+                    '& fieldset': {
+                      border: 'none',
+                    },
+                  },
+                  flex: 1,
+                  mr: 2,
+                }}
+              />
+              <IconButton
+                color="primary"
+                onClick={handleSendMessage}
+                disabled={!input.trim() || isLoading}
+                sx={{
+                  backgroundColor: 'primary.main',
+                  color: 'white',
+                  '&:hover': {
+                    backgroundColor: 'primary.dark',
+                  },
+                  '&:disabled': {
+                    backgroundColor: 'action.disabledBackground',
+                  },
+                }}
+              >
+                <SendIcon />
+              </IconButton>
+            </InputContainer>
+          </>
+        ) : (
+          <Box sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            height: '100%',
+            textAlign: 'center',
+            p: 4
+          }}>
+            <Typography variant="h5" gutterBottom>
+              Welcome to Gemini Chat
+            </Typography>
+            <Typography variant="body1" sx={{ mb: 3 }}>
+              Please sign in to start chatting with the AI assistant
+            </Typography>
+            <Button 
+              variant="contained" 
+              size="large"
+              onClick={() => setAuthDialogOpen(true)}
+              sx={{ mb: 2 }}
+            >
+              Sign In
+            </Button>
+          </Box>
+        )}
+      </ChatContainer>
+
+      {/* Authentication Dialog */}
+      <Dialog open={authDialogOpen} onClose={() => setAuthDialogOpen(false)}>
+        <DialogTitle>{authMode === 'login' ? 'Sign In' : 'Create Account'}</DialogTitle>
+        <DialogContent sx={{ minWidth: 400 }}>
+          {authMode === 'signup' && (
+            <TextField
+              autoFocus
+              margin="dense"
+              label="Name"
+              type="text"
+              fullWidth
+              variant="outlined"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              sx={{ mb: 2 }}
+            />
+          )}
           <TextField
+            margin="dense"
+            label="Email"
+            type="email"
             fullWidth
             variant="outlined"
-            placeholder="Type your message..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            multiline
-            maxRows={4}
-            sx={{
-              '& .MuiOutlinedInput-root': {
-                borderRadius: '20px',
-                '& fieldset': {
-                  border: 'none',
-                },
-              },
-              flex: 1,
-              mr: 2,
-            }}
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            sx={{ mb: 2 }}
           />
-          <IconButton
-            color="primary"
-            onClick={handleSendMessage}
-            disabled={!input.trim() || isLoading}
-            sx={{
-              backgroundColor: 'primary.main',
-              color: 'white',
-              '&:hover': {
-                backgroundColor: 'primary.dark',
-              },
-              '&:disabled': {
-                backgroundColor: 'action.disabledBackground',
-              },
-            }}
+          <TextField
+            margin="dense"
+            label="Password"
+            type="password"
+            fullWidth
+            variant="outlined"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            sx={{ mb: 3 }}
+          />
+          
+          <Button
+            fullWidth
+            variant="contained"
+            onClick={authMode === 'login' ? handleEmailLogin : handleEmailSignup}
+            sx={{ mb: 2 }}
           >
-            <SendIcon />
-          </IconButton>
-        </InputContainer>
-      </ChatContainer>
+            {authMode === 'login' ? 'Sign In' : 'Sign Up'}
+          </Button>
+          
+          <Box sx={{ display: 'flex', justifyContent: 'center', mb: 2 }}>
+            <Button
+              variant="outlined"
+              fullWidth
+              onClick={() => handleGoogleLogin()}
+              startIcon={<img src="https://www.google.com/favicon.ico" alt="Google" width={20} />}
+            >
+              Continue with Google
+            </Button>
+          </Box>
+          
+          <Divider sx={{ my: 2 }} />
+          
+          <Typography variant="body2" align="center">
+            {authMode === 'login' ? (
+              <>Don't have an account? <Button onClick={() => setAuthMode('signup')}>Sign up</Button></>
+            ) : (
+              <>Already have an account? <Button onClick={() => setAuthMode('login')}>Sign in</Button></>
+            )}
+          </Typography>
+        </DialogContent>
+      </Dialog>
 
       {/* Snackbar for notifications */}
       <Snackbar
